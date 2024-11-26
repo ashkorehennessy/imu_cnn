@@ -4,9 +4,11 @@
 #include <sys/time.h>
 #include <esp_log.h>
 #include "esp_system.h"
-#include "driver/i2c.h"
 
 #include "icm20948.h"
+
+#include <string.h>
+#include <driver/i2c_master.h>
 
 #define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
 #define BYTE_TO_BINARY(byte)                                                                                           \
@@ -43,96 +45,107 @@ typedef struct {
 	uint32_t counter;
 	float dt; /*!< delay time between two measurements, dt should be small (ms level) */
 	struct timeval *timer;
+	i2c_master_bus_handle_t bus_handle;
+	i2c_master_dev_handle_t dev_handle;
 } icm20948_dev_t;
 
-static esp_err_t
-icm20948_write(icm20948_handle_t sensor,
-               const uint8_t reg_start_addr,
-               const uint8_t *const data_buf,
-               const uint8_t data_len)
-{
+static esp_err_t icm20948_write(icm20948_handle_t sensor,
+								const uint8_t reg_start_addr,
+								const uint8_t *const data_buf,
+								const uint8_t data_len) {
 	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
-	esp_err_t ret;
 
-	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-	ret = i2c_master_start(cmd);
-	assert(ESP_OK == ret);
-	ret = i2c_master_write_byte(cmd, sens->dev_addr | I2C_MASTER_WRITE, true);
-	assert(ESP_OK == ret);
-	ret = i2c_master_write_byte(cmd, reg_start_addr, true);
-	assert(ESP_OK == ret);
-	ret = i2c_master_write(cmd, data_buf, data_len, true);
-	assert(ESP_OK == ret);
-	ret = i2c_master_stop(cmd);
-	assert(ESP_OK == ret);
-	ret = i2c_master_cmd_begin(sens->bus, cmd, 1000 / portTICK_PERIOD_MS);
-	i2c_cmd_link_delete(cmd);
+	// 创建写入缓冲区
+	uint8_t *write_buf = (uint8_t *)malloc(data_len + 1);
+	if (!write_buf) {
+		ESP_LOGE("ICM20948", "Memory allocation failed");
+		return ESP_ERR_NO_MEM;
+	}
+
+	write_buf[0] = reg_start_addr; // 设置寄存器地址
+	memcpy(&write_buf[1], data_buf, data_len); // 拷贝数据
+
+	// 使用新的 API 进行写入
+	esp_err_t ret = i2c_master_transmit(sens->dev_handle, write_buf, data_len + 1, -1);
+	if (ret != ESP_OK) {
+		ESP_LOGE("ICM20948", "I2C write failed: %s", esp_err_to_name(ret));
+	}
+
+	free(write_buf);
+	return ret;
+}
+
+static esp_err_t icm20948_read(icm20948_handle_t sensor,
+							   const uint8_t reg_start_addr,
+							   uint8_t *const data_buf,
+							   const uint8_t data_len) {
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+
+	// 创建寄存器地址缓冲区
+	uint8_t reg_buf = reg_start_addr;
+
+	// 使用新的 API 进行读取
+	esp_err_t ret = i2c_master_transmit_receive(sens->dev_handle, &reg_buf, 1, data_buf, data_len, -1);
+	if (ret != ESP_OK) {
+		ESP_LOGE("ICM20948", "I2C read failed: %s", esp_err_to_name(ret));
+	}
 
 	return ret;
 }
 
-static esp_err_t
-icm20948_read(icm20948_handle_t sensor, const uint8_t reg_start_addr, uint8_t *const data_buf, const uint8_t data_len)
-{
+esp_err_t icm20948_bus_init(icm20948_handle_t sensor) {
 	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
-	esp_err_t ret;
 
-	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-	ret = i2c_master_start(cmd);
-	assert(ESP_OK == ret);
-	ret = i2c_master_write_byte(cmd, sens->dev_addr | I2C_MASTER_WRITE, true);
-	assert(ESP_OK == ret);
-	ret = i2c_master_write_byte(cmd, reg_start_addr, true);
-	assert(ESP_OK == ret);
-	ret = i2c_master_start(cmd);
-	assert(ESP_OK == ret);
-	ret = i2c_master_write_byte(cmd, sens->dev_addr | I2C_MASTER_READ, true);
-	assert(ESP_OK == ret);
-	ret = i2c_master_read(cmd, data_buf, data_len, I2C_MASTER_LAST_NACK);
-	assert(ESP_OK == ret);
-	ret = i2c_master_stop(cmd);
-	assert(ESP_OK == ret);
-	ret = i2c_master_cmd_begin(sens->bus, cmd, 1000 / portTICK_PERIOD_MS);
-	i2c_cmd_link_delete(cmd);
+	// 配置 I2C 主机
+	i2c_master_bus_config_t i2c_mst_config = {
+		.clk_source = I2C_CLK_SRC_DEFAULT,
+		.i2c_port = sens->bus,
+		.scl_io_num = SCL_PIN,
+		.sda_io_num = SDA_PIN,
+		.glitch_ignore_cnt = 7,
+		.flags.enable_internal_pullup = true,
+	};
 
-	return ret;
+	// 创建 I2C 主机
+	esp_err_t ret = i2c_new_master_bus(&i2c_mst_config, &sens->bus_handle);
+	if (ret != ESP_OK) {
+		ESP_LOGE("ICM20948", "Failed to create I2C master bus: %s", esp_err_to_name(ret));
+		return ret;
+	}
+
+	// 配置 I2C 设备
+	i2c_device_config_t dev_cfg = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = sens->dev_addr >> 1,  // 7 位地址模式
+		.scl_speed_hz = 100000,
+	};
+
+	// 添加设备
+	ret = i2c_master_bus_add_device(sens->bus_handle, &dev_cfg, &sens->dev_handle);
+	if (ret != ESP_OK) {
+		ESP_LOGE("ICM20948", "Failed to add I2C device: %s", esp_err_to_name(ret));
+		return ret;
+	}
+
+	ESP_LOGI("ICM20948", "I2C bus and device initialized successfully");
+	return ESP_OK;
 }
 
-esp_err_t
-icm20948_bus_init(icm20948_handle_t sensor)
-{
-    icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = SDA_PIN,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_io_num = SCL_PIN,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 400000,
-    };
-    esp_err_t ret = i2c_param_config(sens->bus, &conf);
-    if (ESP_OK != ret) {
-        ESP_LOGE("ICM20948", "i2c_param_config failed");
-        return ret;
-    }
-    ret = i2c_driver_install(sens->bus, I2C_MODE_MASTER, 0, 0, 0);
-    if (ESP_OK != ret) {
-        ESP_LOGE("ICM20948", "i2c_driver_install failed");
-        return ret;
-    }
-    ESP_LOGI("ICM20948", "I2C bus init success");
-    return ret;
-}
-
-icm20948_handle_t
-icm20948_create(i2c_port_t port, const uint16_t dev_addr)
-{
+icm20948_handle_t icm20948_create(i2c_port_t port, const uint16_t dev_addr) {
 	icm20948_dev_t *sensor = (icm20948_dev_t *)calloc(1, sizeof(icm20948_dev_t));
+	if (!sensor) {
+		ESP_LOGE("ICM20948", "Memory allocation failed");
+		return NULL;
+	}
+
 	sensor->bus = port;
-	sensor->dev_addr = dev_addr << 1;
+	sensor->dev_addr = dev_addr << 1; // 左移以适配 8 位地址
 	sensor->counter = 0;
 	sensor->dt = 0;
 	sensor->timer = (struct timeval *)calloc(1, sizeof(struct timeval));
+	sensor->bus_handle = NULL;
+	sensor->dev_handle = NULL;
+
 	return (icm20948_handle_t)sensor;
 }
 
@@ -165,7 +178,6 @@ icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce_fs, icm20
         return ret;
     }
 
-    vTaskDelay(10 / portTICK_PERIOD_MS);
 
     ret = icm20948_wake_up(icm20948);
     if (ret != ESP_OK) {

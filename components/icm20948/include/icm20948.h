@@ -1,10 +1,10 @@
 #ifndef __ICM20948_H__
 #define __ICM20948_H__
 
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "driver/gpio.h"
 
-#define ICM20948_I2C_ADDRESS   0x68
+#define ICM20948_I2C_ADDRESS   0x69
 #define ICM20948_I2C_ADDRESS_1 0x68
 #define ICM20948_WHO_AM_I_VAL  0xEA
 #define SDA_PIN GPIO_NUM_1
@@ -227,7 +227,7 @@ esp_err_t icm20948_get_raw_gyro(icm20948_handle_t sensor, icm20948_raw_gyro_valu
  * @brief Set accelerometer full scale range
  *
  * @param sensor object handle of icm20948
- * @param gyro_fs gyroscope full scale range
+ * @param acce_fs accelerometer full scale range
  *
  * @return
  *     - ESP_OK Success
@@ -239,7 +239,7 @@ esp_err_t icm20948_set_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t acce
  * @brief Get accelerometer full scale range
  *
  * @param sensor object handle of icm20948
- * @param gyro_fs gyroscope full scale range
+ * @param acce_fs accelerometer full scale range
  *
  * @return
  *     - ESP_OK Success

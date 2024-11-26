@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <math.h>
-#include <time.h>
 #include <sys/time.h>
 #include <esp_log.h>
 #include "esp_system.h"
@@ -9,6 +8,7 @@
 
 #include <string.h>
 #include <driver/i2c_master.h>
+#include <freertos/FreeRTOS.h>
 
 #define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
 #define BYTE_TO_BINARY(byte)                                                                                           \
@@ -36,42 +36,25 @@
 #define ICM20948_PWR_MGMT_1    0x06
 #define ICM20948_WHO_AM_I      0x00
 #define ICM20948_REG_BANK_SEL  0x7F
-#define I2C_NUM I2C_NUM_0
 
-typedef struct {
-	i2c_port_t bus;
-	gpio_num_t int_pin;
-	uint16_t dev_addr;
-	uint32_t counter;
-	float dt; /*!< delay time between two measurements, dt should be small (ms level) */
-	struct timeval *timer;
-	i2c_master_bus_handle_t bus_handle;
-	i2c_master_dev_handle_t dev_handle;
-} icm20948_dev_t;
+static int current_bank = 0;
 
 static esp_err_t icm20948_write(icm20948_handle_t sensor,
-								const uint8_t reg_start_addr,
-								const uint8_t *const data_buf,
-								const uint8_t data_len) {
-	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+                                const uint8_t reg_start_addr,
+                                const uint8_t *const data_buf) {
+	const icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
 
 	// 创建写入缓冲区
-	uint8_t *write_buf = (uint8_t *)malloc(data_len + 1);
-	if (!write_buf) {
-		ESP_LOGE("ICM20948", "Memory allocation failed");
-		return ESP_ERR_NO_MEM;
-	}
+	uint8_t write_buf[2];
 
 	write_buf[0] = reg_start_addr; // 设置寄存器地址
-	memcpy(&write_buf[1], data_buf, data_len); // 拷贝数据
+	write_buf[1] = *data_buf;      // 设置数据
 
 	// 使用新的 API 进行写入
-	esp_err_t ret = i2c_master_transmit(sens->dev_handle, write_buf, data_len + 1, -1);
+	const esp_err_t ret = i2c_master_transmit(sens->dev_handle, write_buf, 2, -1);
 	if (ret != ESP_OK) {
 		ESP_LOGE("ICM20948", "I2C write failed: %s", esp_err_to_name(ret));
 	}
-
-	free(write_buf);
 	return ret;
 }
 
@@ -79,13 +62,10 @@ static esp_err_t icm20948_read(icm20948_handle_t sensor,
 							   const uint8_t reg_start_addr,
 							   uint8_t *const data_buf,
 							   const uint8_t data_len) {
-	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
-
-	// 创建寄存器地址缓冲区
-	uint8_t reg_buf = reg_start_addr;
+	const icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
 
 	// 使用新的 API 进行读取
-	esp_err_t ret = i2c_master_transmit_receive(sens->dev_handle, &reg_buf, 1, data_buf, data_len, -1);
+	const esp_err_t ret = i2c_master_transmit_receive(sens->dev_handle, &reg_start_addr, 1, data_buf, data_len, -1);
 	if (ret != ESP_OK) {
 		ESP_LOGE("ICM20948", "I2C read failed: %s", esp_err_to_name(ret));
 	}
@@ -93,15 +73,15 @@ static esp_err_t icm20948_read(icm20948_handle_t sensor,
 	return ret;
 }
 
-esp_err_t icm20948_bus_init(icm20948_handle_t sensor) {
-	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, gpio_num_t SCL, gpio_num_t SDA, uint32_t scl_speed) {
+	icm20948_dev_t *sens = sensor;
 
 	// 配置 I2C 主机
 	i2c_master_bus_config_t i2c_mst_config = {
 		.clk_source = I2C_CLK_SRC_DEFAULT,
 		.i2c_port = sens->bus,
-		.scl_io_num = SCL_PIN,
-		.sda_io_num = SDA_PIN,
+		.scl_io_num = SCL,
+		.sda_io_num = SDA,
 		.glitch_ignore_cnt = 7,
 		.flags.enable_internal_pullup = true,
 	};
@@ -117,7 +97,7 @@ esp_err_t icm20948_bus_init(icm20948_handle_t sensor) {
 	i2c_device_config_t dev_cfg = {
 		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
 		.device_address = sens->dev_addr >> 1,  // 7 位地址模式
-		.scl_speed_hz = 100000,
+		.scl_speed_hz = scl_speed,
 	};
 
 	// 添加设备
@@ -131,7 +111,7 @@ esp_err_t icm20948_bus_init(icm20948_handle_t sensor) {
 	return ESP_OK;
 }
 
-icm20948_handle_t icm20948_create(i2c_port_t port, const uint16_t dev_addr) {
+icm20948_handle_t icm20948_create(i2c_port_t port, const uint16_t dev_addr, icm20948_data_t *data) {
 	icm20948_dev_t *sensor = (icm20948_dev_t *)calloc(1, sizeof(icm20948_dev_t));
 	if (!sensor) {
 		ESP_LOGE("ICM20948", "Memory allocation failed");
@@ -140,91 +120,73 @@ icm20948_handle_t icm20948_create(i2c_port_t port, const uint16_t dev_addr) {
 
 	sensor->bus = port;
 	sensor->dev_addr = dev_addr << 1; // 左移以适配 8 位地址
-	sensor->counter = 0;
-	sensor->dt = 0;
-	sensor->timer = (struct timeval *)calloc(1, sizeof(struct timeval));
+	sensor->data = data;
 	sensor->bus_handle = NULL;
 	sensor->dev_handle = NULL;
 
 	return (icm20948_handle_t)sensor;
 }
 
-void
-icm20948_delete(icm20948_handle_t sensor)
+void icm20948_delete(icm20948_handle_t sensor)
 {
 	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
 	free(sens);
 }
 
-esp_err_t
-icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce_fs, icm20948_gyro_fs_t gyro_fs)
+esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce_fs, icm20948_gyro_fs_t gyro_fs)
 {
     esp_err_t ret;
 
-    /*
-     * One might need to change ICM20948_I2C_ADDRESS to ICM20948_I2C_ADDRESS_1
-     * if address pin pulled low (to GND)
-     */
-    // icm20948 = icm20948_create(I2C_NUM, ICM20948_I2C_ADDRESS);
-    // if (icm20948 == NULL) {
-    //     ESP_LOGE("ICM20948", "ICM20948 create returned NULL!");
-    //     return ESP_FAIL;
-    // }
-    // ESP_LOGI("ICM20948", "ICM20948 creation successfull!");
-
     ret = icm20948_reset(icm20948);
     if (ret != ESP_OK){
-        ESP_LOGE("ICM20948", "ICM20948 reset failed!");
+        ESP_LOGE("ICM20948", "Reset failed!");
         return ret;
     }
 
+	vTaskDelay(10 / portTICK_PERIOD_MS);
 
     ret = icm20948_wake_up(icm20948);
     if (ret != ESP_OK) {
-        ESP_LOGE("ICM20948", "ICM20948 wake up failed!");
+        ESP_LOGE("ICM20948", "Wake up failed!");
         return ret;
     }
 
     ret = icm20948_set_bank(icm20948, 0);
     if (ret != ESP_OK) {
-        ESP_LOGE("ICM20948", "ICM20948 set bank failed!");
+        ESP_LOGE("ICM20948", "Set bank failed!");
         return ret;
     }
 
     uint8_t device_id;
     ret = icm20948_get_deviceid(icm20948, &device_id);
     if (ret != ESP_OK){
-        ESP_LOGE("ICM20948", "ICM20948 get device id failed!");
+        ESP_LOGE("ICM20948", "Get device id failed!");
         return ret;
     }
-    ESP_LOGI("ICM20948", "0x%02X", device_id);
+    ESP_LOGI("ICM20948", "Device ID:0x%02X", device_id);
     if (device_id != ICM20948_WHO_AM_I_VAL){
-        ESP_LOGE("ICM20948", "ICM20948 device id mismatch!");
+        ESP_LOGE("ICM20948", "Device id mismatch!");
         return ESP_FAIL;
     }
 
     ret = icm20948_set_gyro_fs(icm20948, gyro_fs);
     if (ret != ESP_OK){
-        ESP_LOGE("ICM20948", "ICM20948 set gyro fs failed!");
         return ret;
     }
 
     ret = icm20948_set_acce_fs(icm20948, acce_fs);
     if (ret != ESP_OK){
-        ESP_LOGE("ICM20948", "ICM20948 set acce fs failed!");
         return ret;
     }
     return ret;
 }
 
-esp_err_t
-icm20948_get_deviceid(icm20948_handle_t sensor, uint8_t *const deviceid)
+esp_err_t icm20948_get_deviceid(icm20948_handle_t sensor, uint8_t *const deviceid)
 {
 	return icm20948_read(sensor, ICM20948_WHO_AM_I, deviceid, 1);
 }
 
-esp_err_t
-icm20948_wake_up(icm20948_handle_t sensor)
+esp_err_t icm20948_wake_up(icm20948_handle_t sensor)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -233,12 +195,11 @@ icm20948_wake_up(icm20948_handle_t sensor)
 		return ret;
 	}
 	tmp &= (~BIT6);
-	ret = icm20948_write(sensor, ICM20948_PWR_MGMT_1, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_PWR_MGMT_1, &tmp);
 	return ret;
 }
 
-esp_err_t
-icm20948_sleep(icm20948_handle_t sensor)
+esp_err_t icm20948_sleep(icm20948_handle_t sensor)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -247,12 +208,11 @@ icm20948_sleep(icm20948_handle_t sensor)
 		return ret;
 	}
 	tmp |= BIT6;
-	ret = icm20948_write(sensor, ICM20948_PWR_MGMT_1, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_PWR_MGMT_1, &tmp);
 	return ret;
 }
 
-esp_err_t
-icm20948_reset(icm20948_handle_t sensor)
+esp_err_t icm20948_reset(icm20948_handle_t sensor)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -261,26 +221,27 @@ icm20948_reset(icm20948_handle_t sensor)
 	if (ret != ESP_OK)
 		return ret;
 	tmp |= 0x80;
-	ret = icm20948_write(sensor, ICM20948_PWR_MGMT_1, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_PWR_MGMT_1, &tmp);
 	if (ret != ESP_OK)
 		return ret;
 
 	return ret;
 }
 
-esp_err_t
-icm20948_set_bank(icm20948_handle_t sensor, uint8_t bank)
+esp_err_t icm20948_set_bank(icm20948_handle_t sensor, uint8_t bank)
 {
 	esp_err_t ret;
 	if (bank > 3)
 		return ESP_FAIL;
 	bank = (bank << 4) & 0x30;
-	ret = icm20948_write(sensor, ICM20948_REG_BANK_SEL, &bank, 1);
+	ret = icm20948_write(sensor, ICM20948_REG_BANK_SEL, &bank);
+	if (ret != ESP_OK)
+		return ret;
+	current_bank = bank;
 	return ret;
 }
 
-esp_err_t
-icm20948_set_gyro_fs(icm20948_handle_t sensor, icm20948_gyro_fs_t gyro_fs)
+esp_err_t icm20948_set_gyro_fs(icm20948_handle_t sensor, icm20948_gyro_fs_t gyro_fs)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -290,121 +251,99 @@ icm20948_set_gyro_fs(icm20948_handle_t sensor, icm20948_gyro_fs_t gyro_fs)
 		return ret;
 
 	ret = icm20948_read(sensor, ICM20948_GYRO_CONFIG_1, &tmp, 1);
-
-#if CONFIG_LOG_DEFAULT_LEVEL == 4
-	printf(BYTE_TO_BINARY_PATTERN "\n", BYTE_TO_BINARY(tmp));
-#endif
 
 	if (ret != ESP_OK)
 		return ret;
 	tmp &= 0x09;
 	tmp |= (gyro_fs << 1);
 
-#if CONFIG_LOG_DEFAULT_LEVEL == 4
-	printf(BYTE_TO_BINARY_PATTERN "\n", BYTE_TO_BINARY(tmp));
-#endif
-
-	ret = icm20948_write(sensor, ICM20948_GYRO_CONFIG_1, &tmp, 1);
-	return ret;
-}
-
-esp_err_t
-icm20948_get_gyro_fs(icm20948_handle_t sensor, icm20948_gyro_fs_t *gyro_fs)
-{
-	esp_err_t ret;
-	uint8_t tmp;
-
-	ret = icm20948_set_bank(sensor, 2);
-	if (ret != ESP_OK)
+	ret = icm20948_write(sensor, ICM20948_GYRO_CONFIG_1, &tmp);
+	if (ret != ESP_OK) {
+		ESP_LOGE("ICM20948", "Set gyro fs failed!");
 		return ret;
-
-	ret = icm20948_read(sensor, ICM20948_GYRO_CONFIG_1, &tmp, 1);
-
-#if CONFIG_LOG_DEFAULT_LEVEL == 4
-	printf(BYTE_TO_BINARY_PATTERN "\n", BYTE_TO_BINARY(tmp));
-#endif
-
-	tmp &= 0x06;
-	tmp >>= 1;
-	*gyro_fs = tmp;
-	return ret;
-}
-
-esp_err_t
-icm20948_get_gyro_sensitivity(icm20948_handle_t sensor, float *const gyro_sensitivity)
-{
-	esp_err_t ret;
-	icm20948_gyro_fs_t gyro_fs;
-	ret = icm20948_get_gyro_fs(sensor, &gyro_fs);
-	if (ret != ESP_OK)
-		return ret;
-
-	switch (gyro_fs) {
-	case GYRO_FS_250DPS:
-		*gyro_sensitivity = 131;
-		break;
-
-	case GYRO_FS_500DPS:
-		*gyro_sensitivity = 65.5f;
-		break;
-
-	case GYRO_FS_1000DPS:
-		*gyro_sensitivity = 32.8f;
-		break;
-
-	case GYRO_FS_2000DPS:
-		*gyro_sensitivity = 16.4f;
-		break;
-
-	default:
-		break;
 	}
+	// if set gyro fs success, record to sensor
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	sens->gyro_fs = gyro_fs;
 	return ret;
 }
 
-esp_err_t
-icm20948_get_raw_gyro(icm20948_handle_t sensor, icm20948_raw_gyro_value_t *const raw_gyro_value)
+float icm20948_get_acce_sensitivity(icm20948_handle_t sensor)
 {
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	icm20948_acce_fs_t acce_fs = sens->acce_fs;
+	switch (acce_fs){
+	case ACCE_FS_2G:
+		return 16384;
+	case ACCE_FS_4G:
+		return 8192;
+	case ACCE_FS_8G:
+		return 4096;
+	case ACCE_FS_16G:
+		return 2048;
+	}
+	return 16384;
+}
+
+float icm20948_get_gyro_sensitivity(icm20948_handle_t sensor){
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	icm20948_gyro_fs_t gyro_fs = sens->gyro_fs;
+	switch (gyro_fs){
+	case GYRO_FS_250DPS:
+		return 131;
+	case GYRO_FS_500DPS:
+		return 65.5f;
+	case GYRO_FS_1000DPS:
+		return 32.8f;
+	case GYRO_FS_2000DPS:
+		return 16.4f;
+	}
+	return 131;
+}
+
+esp_err_t icm20948_get_acce(icm20948_handle_t sensor)
+{
+	if (current_bank != 0){
+		icm20948_set_bank(sensor, 0);
+	}
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	uint8_t data_rd[6];
+	esp_err_t ret = icm20948_read(sensor, ICM20948_ACCEL_XOUT_H, data_rd, sizeof(data_rd));
+
+	sens->data->ax_raw = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
+	sens->data->ay_raw = (int16_t)((data_rd[2] << 8) + (data_rd[3]));
+	sens->data->az_raw = (int16_t)((data_rd[4] << 8) + (data_rd[5]));
+
+	float acce_sensitivity = icm20948_get_acce_sensitivity(sensor);
+	sens->data->ax = (float)sens->data->ax_raw / acce_sensitivity;
+	sens->data->ay = (float)sens->data->ay_raw / acce_sensitivity;
+	sens->data->az = (float)sens->data->az_raw / acce_sensitivity;
+
+	return ret;
+}
+
+esp_err_t icm20948_get_gyro(icm20948_handle_t sensor)
+{
+	if (current_bank != 0){
+		icm20948_set_bank(sensor, 0);
+	}
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
 	uint8_t data_rd[6];
 	esp_err_t ret = icm20948_read(sensor, ICM20948_GYRO_XOUT_H, data_rd, sizeof(data_rd));
 
-	raw_gyro_value->raw_gyro_x = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
-	raw_gyro_value->raw_gyro_y = (int16_t)((data_rd[2] << 8) + (data_rd[3]));
-	raw_gyro_value->raw_gyro_z = (int16_t)((data_rd[4] << 8) + (data_rd[5]));
+	sens->data->gx_raw = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
+	sens->data->gy_raw = (int16_t)((data_rd[2] << 8) + (data_rd[3]));
+	sens->data->gz_raw = (int16_t)((data_rd[4] << 8) + (data_rd[5]));
+
+	float gyro_sensitivity = icm20948_get_gyro_sensitivity(sensor);
+	sens->data->gx = (float)sens->data->gx_raw / gyro_sensitivity;
+	sens->data->gy = (float)sens->data->gy_raw / gyro_sensitivity;
+	sens->data->gz = (float)sens->data->gz_raw / gyro_sensitivity;
 
 	return ret;
 }
 
-esp_err_t
-icm20948_get_gyro(icm20948_handle_t sensor, icm20948_gyro_value_t *const gyro_value)
-{
-	esp_err_t ret;
-	float gyro_sensitivity;
-	icm20948_raw_gyro_value_t raw_gyro;
-
-	ret = icm20948_get_gyro_sensitivity(sensor, &gyro_sensitivity);
-	if (ret != ESP_OK) {
-		return ret;
-	}
-
-	ret = icm20948_set_bank(sensor, 0);
-	if (ret != ESP_OK) {
-		return ret;
-	}
-
-	ret = icm20948_get_raw_gyro(sensor, &raw_gyro);
-	if (ret != ESP_OK) {
-		return ret;
-	}
-
-	gyro_value->gyro_x = (float)raw_gyro.raw_gyro_x / gyro_sensitivity;
-	gyro_value->gyro_y = (float)raw_gyro.raw_gyro_y / gyro_sensitivity;
-	gyro_value->gyro_z = (float)raw_gyro.raw_gyro_z / gyro_sensitivity;
-	return ESP_OK;
-}
-
-esp_err_t
-icm20948_set_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t acce_fs)
+esp_err_t icm20948_set_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t acce_fs)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -428,12 +367,18 @@ icm20948_set_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t acce_fs)
 	printf(BYTE_TO_BINARY_PATTERN "\n", BYTE_TO_BINARY(tmp));
 #endif
 
-	ret = icm20948_write(sensor, ICM20948_ACCEL_CONFIG, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_ACCEL_CONFIG, &tmp);
+	if (ret != ESP_OK) {
+		ESP_LOGE("ICM20948", "Set acce fs failed!");
+		return ret;
+	}
+	// if set acce fs success, record to sensor
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	sens->acce_fs = acce_fs;
 	return ret;
 }
 
-esp_err_t
-icm20948_get_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t *acce_fs)
+esp_err_t icm20948_get_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t *acce_fs)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -454,76 +399,8 @@ icm20948_get_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t *acce_fs)
 	return ret;
 }
 
-esp_err_t
-icm20948_get_raw_acce(icm20948_handle_t sensor, icm20948_raw_acce_value_t *const raw_acce_value)
-{
-	uint8_t data_rd[6];
-	esp_err_t ret = icm20948_read(sensor, ICM20948_ACCEL_XOUT_H, data_rd, sizeof(data_rd));
 
-	raw_acce_value->raw_acce_x = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
-	raw_acce_value->raw_acce_y = (int16_t)((data_rd[2] << 8) + (data_rd[3]));
-	raw_acce_value->raw_acce_z = (int16_t)((data_rd[4] << 8) + (data_rd[5]));
-	return ret;
-}
-
-esp_err_t
-icm20948_get_acce_sensitivity(icm20948_handle_t sensor, float *const acce_sensitivity)
-{
-	esp_err_t ret;
-	icm20948_acce_fs_t acce_fs;
-	ret = icm20948_get_acce_fs(sensor, &acce_fs);
-	switch (acce_fs) {
-	case ACCE_FS_2G:
-		*acce_sensitivity = 16384;
-		break;
-
-	case ACCE_FS_4G:
-		*acce_sensitivity = 8192;
-		break;
-
-	case ACCE_FS_8G:
-		*acce_sensitivity = 4096;
-		break;
-
-	case ACCE_FS_16G:
-		*acce_sensitivity = 2048;
-		break;
-
-	default:
-		break;
-	}
-	return ret;
-}
-
-esp_err_t
-icm20948_get_acce(icm20948_handle_t sensor, icm20948_acce_value_t *const acce_value)
-{
-	esp_err_t ret;
-	float acce_sensitivity;
-	icm20948_raw_acce_value_t raw_acce;
-
-	ret = icm20948_get_acce_sensitivity(sensor, &acce_sensitivity);
-	if (ret != ESP_OK) {
-		return ret;
-	}
-
-	ret = icm20948_set_bank(sensor, 0);
-	if (ret != ESP_OK)
-		return ret;
-
-	ret = icm20948_get_raw_acce(sensor, &raw_acce);
-	if (ret != ESP_OK) {
-		return ret;
-	}
-
-	acce_value->acce_x = (float)raw_acce.raw_acce_x / acce_sensitivity;
-	acce_value->acce_y = (float)raw_acce.raw_acce_y / acce_sensitivity;
-	acce_value->acce_z = (float)raw_acce.raw_acce_z / acce_sensitivity;
-	return ESP_OK;
-}
-
-esp_err_t
-icm20948_set_acce_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_acce)
+esp_err_t icm20948_set_acce_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_acce)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -539,15 +416,14 @@ icm20948_set_acce_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_acce)
 	tmp &= 0xC7;
 	tmp |= dlpf_acce << 3;
 
-	ret = icm20948_write(sensor, ICM20948_ACCEL_CONFIG, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_ACCEL_CONFIG, &tmp);
 	if (ret != ESP_OK)
 		return ESP_FAIL;
 
 	return ret;
 }
 
-esp_err_t
-icm20948_set_gyro_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_gyro)
+esp_err_t icm20948_set_gyro_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_gyro)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -563,15 +439,14 @@ icm20948_set_gyro_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_gyro)
 	tmp &= 0xC7;
 	tmp |= dlpf_gyro << 3;
 
-	ret = icm20948_write(sensor, ICM20948_GYRO_CONFIG_1, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_GYRO_CONFIG_1, &tmp);
 	if (ret != ESP_OK)
 		return ESP_FAIL;
 
 	return ret;
 }
 
-esp_err_t
-icm20948_enable_dlpf(icm20948_handle_t sensor, bool enable)
+esp_err_t icm20948_enable_dlpf(icm20948_handle_t sensor, bool enable)
 {
 	esp_err_t ret;
 	uint8_t tmp;
@@ -589,7 +464,7 @@ icm20948_enable_dlpf(icm20948_handle_t sensor, bool enable)
 	else
 		tmp &= 0xFE;
 
-	ret = icm20948_write(sensor, ICM20948_ACCEL_CONFIG, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_ACCEL_CONFIG, &tmp);
 	if (ret != ESP_OK)
 		return ESP_FAIL;
 
@@ -602,7 +477,7 @@ icm20948_enable_dlpf(icm20948_handle_t sensor, bool enable)
 	else
 		tmp &= 0xFE;
 
-	ret = icm20948_write(sensor, ICM20948_GYRO_CONFIG_1, &tmp, 1);
+	ret = icm20948_write(sensor, ICM20948_GYRO_CONFIG_1, &tmp);
 	if (ret != ESP_OK)
 		return ESP_FAIL;
 

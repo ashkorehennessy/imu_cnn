@@ -7,8 +7,6 @@
 #define ICM20948_I2C_ADDRESS   0x69
 #define ICM20948_I2C_ADDRESS_1 0x68
 #define ICM20948_WHO_AM_I_VAL  0xEA
-#define SDA_PIN GPIO_NUM_1
-#define SCL_PIN GPIO_NUM_2
 
 typedef enum {
 	ACCE_FS_2G = 0,  /*!< Accelerometer full scale range is +/- 2g */
@@ -73,55 +71,77 @@ extern const uint8_t icm20948_MOT_DETECT_INT_BIT;    /*!< MOTION DETECTION inter
 extern const uint8_t icm20948_ALL_INTERRUPTS;        /*!< All interrupts supported by icm20948    */
 
 typedef struct {
-	int16_t raw_acce_x;
-	int16_t raw_acce_y;
-	int16_t raw_acce_z;
-} icm20948_raw_acce_value_t;
-
-typedef struct {
-	int16_t raw_gyro_x;
-	int16_t raw_gyro_y;
-	int16_t raw_gyro_z;
-} icm20948_raw_gyro_value_t;
-
-typedef struct {
-	float acce_x;
-	float acce_y;
-	float acce_z;
-} icm20948_acce_value_t;
-
-typedef struct {
-	float gyro_x;
-	float gyro_y;
-	float gyro_z;
-} icm20948_gyro_value_t;
-
-typedef struct {
+	int16_t ax_raw;
+	int16_t ay_raw;
+	int16_t az_raw;
+	int16_t gx_raw;
+	int16_t gy_raw;
+	int16_t gz_raw;
+	float ax;
+	float ay;
+	float az;
+	float gx;
+	float gy;
+	float gz;
+	float anglex;
+	float angley;
+	float anglez;
 	float temp;
-} icm20948_temp_value_t;
 
-typedef struct {
-	float roll;
-	float pitch;
-} complimentary_angle_t;
+} icm20948_data_t;
 
 typedef void *icm20948_handle_t;
 
 typedef gpio_isr_t icm20948_isr_t;
-esp_err_t icm20948_bus_init(icm20948_handle_t sensor);
+
+typedef struct {
+	i2c_port_t bus;
+	gpio_num_t int_pin;
+	uint16_t dev_addr;
+	icm20948_acce_fs_t acce_fs;
+	icm20948_gyro_fs_t gyro_fs;
+	icm20948_data_t *data;
+	i2c_master_bus_handle_t bus_handle;
+	i2c_master_dev_handle_t dev_handle;
+} icm20948_dev_t;
+
+/**
+ * @brief Initialize the I2C bus and device
+ *
+ * @param sensor object handle of icm20948
+ * @param SCL I2C SCL gpio number
+ * @param SDA I2C SDA gpio number
+ * @param scl_speed I2C SCL speed in Hz
+ *
+ * @return
+ *     - ESP_OK Success
+ *     - ESP_FAIL Fail
+ */
+esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, gpio_num_t SCL, gpio_num_t SDA, uint32_t scl_speed);
 /**
  * @brief Create and init sensor object and return a sensor handle
  *
  * @param port I2C port number
  * @param dev_addr I2C device address of sensor
+ * @param data sensor data structure
  *
  * @return
  *     - NULL Fail
  *     - Others Success
  */
-icm20948_handle_t icm20948_create(i2c_port_t port, uint16_t dev_addr);
-esp_err_t
-icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce_fs, icm20948_gyro_fs_t gyro_fs);
+icm20948_handle_t icm20948_create(i2c_port_t port, uint16_t dev_addr, icm20948_data_t* data);
+/**
+ * @brief Configure the sensor with the given full scale range
+ *
+ * @param icm20948 object handle of icm20948
+ * @param acce_fs accelerometer full scale range
+ * @param gyro_fs gyroscope full scale range
+ *
+ * @return
+ *     - ESP_OK Success
+ *     - ESP_FAIL Fail
+ */
+esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce_fs, icm20948_gyro_fs_t gyro_fs);
 /**
  * @brief Delete and release a sensor object
  *
@@ -191,37 +211,20 @@ esp_err_t icm20948_get_gyro_fs(icm20948_handle_t sensor, icm20948_gyro_fs_t *gyr
  * @brief Get gyroscope sensitivity
  *
  * @param sensor object handle of icm20948
- * @param gyro_sensitivity gyroscope sensitivity
  *
- * @return
- *     - ESP_OK Success
- *     - ESP_FAIL Fail
+ * @return gyroscope sensitivity
  */
-esp_err_t icm20948_get_gyro_sensitivity(icm20948_handle_t sensor, float *const gyro_sensitivity);
-
+float icm20948_get_gyro_sensitivity(icm20948_handle_t sensor);
 /**
  * @brief Read gyro values
  *
  * @param sensor object handle of icm20948
- * @param gyro_value gyroscope measurements
  *
  * @return
  *     - ESP_OK Success
  *     - ESP_FAIL Fail
  */
-esp_err_t icm20948_get_gyro(icm20948_handle_t sensor, icm20948_gyro_value_t *const gyro_value);
-
-/**
- * @brief Read raw gyroscope measurements
- *
- * @param sensor object handle of icm20948
- * @param raw_gyro_value raw gyroscope measurements
- *
- * @return
- *     - ESP_OK Success
- *     - ESP_FAIL Fail
- */
-esp_err_t icm20948_get_raw_gyro(icm20948_handle_t sensor, icm20948_raw_gyro_value_t *const raw_gyro_value);
+esp_err_t icm20948_get_gyro(icm20948_handle_t sensor);
 
 /**
  * @brief Set accelerometer full scale range
@@ -251,38 +254,22 @@ esp_err_t icm20948_get_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t *acc
  * @brief Get accelerometer sensitivity
  *
  * @param sensor object handle of icm20948
- * @param acce_sensitivity accelerometer sensitivity
  *
  * @return
  *     - ESP_OK Success
  *     - ESP_FAIL Fail
  */
-esp_err_t icm20948_get_acce_sensitivity(icm20948_handle_t sensor, float *const acce_sensitivity);
-
+float icm20948_get_acce_sensitivity(icm20948_handle_t sensor);
 /**
  * @brief Read accelerometer measurements
  *
  * @param sensor object handle of icm20948
- * @param acce_value accelerometer measurements
  *
  * @return
  *     - ESP_OK Success
  *     - ESP_FAIL Fail
  */
-esp_err_t icm20948_get_acce(icm20948_handle_t sensor, icm20948_acce_value_t *const acce_value);
-
-/**
- * @brief Read raw accelerometer measurements
- *
- * @param sensor object handle of icm20948
- * @param raw_acce_value raw accelerometer measurements
- *
- * @return
- *     - ESP_OK Success
- *     - ESP_FAIL Fail
- */
-esp_err_t icm20948_get_raw_acce(icm20948_handle_t sensor, icm20948_raw_acce_value_t *const raw_acce_value);
-
+esp_err_t icm20948_get_acce(icm20948_handle_t sensor);
 /**
  * @brief Reset the internal registers and restores the default settings
  *

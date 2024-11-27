@@ -4,13 +4,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "driver/gpio.h"
 #include "icm20948.h"
 #define SDA_PIN GPIO_NUM_1
 #define SCL_PIN GPIO_NUM_2
 static icm20948_handle_t icm20948 = NULL;
 static icm20948_data_t icm20948_data;
-
 static void icm20948_init()
 {
     icm20948 = icm20948_create(I2C_NUM_0, ICM20948_I2C_ADDRESS, &icm20948_data);
@@ -20,17 +18,13 @@ static void icm20948_init()
 static void icm20948_read()
 {
     const int64_t timestamp = esp_timer_get_time();
-    icm20948_get_acce(icm20948);
-    icm20948_get_gyro(icm20948);
-    const int64_t dt = esp_timer_get_time() - timestamp;
+    icm20948_get_all(icm20948);
+    int64_t dt = esp_timer_get_time() - timestamp;
     // firewater format
-    printf(":%f,%f,%f,%f,%f,%f,%lld\n",
+    printf(":%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%lld\n",
                 icm20948_data.ax, icm20948_data.ay, icm20948_data.az,
-                icm20948_data.gx, icm20948_data.gy, icm20948_data.gz,dt);
-    // printf(":%f,%f,%f,%f,%f,%f\n",
-    //             sens->data->ax, sens->data->ay, sens->data->az,
-    //             sens->data->gx, sens->data->gy, sens->data->gz);
-    // printf(":%lld\n", dt);
+                icm20948_data.gx, icm20948_data.gy, icm20948_data.gz,
+                icm20948_data.anglex, icm20948_data.angley, icm20948_data.anglez,icm20948_data.temp,dt);
 }
 void app_main(void)
 {

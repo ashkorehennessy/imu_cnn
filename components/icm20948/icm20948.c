@@ -3,9 +3,9 @@
 #include <sys/time.h>
 #include <esp_log.h>
 #include "esp_system.h"
-
 #include "icm20948.h"
 
+#include <esp_timer.h>
 #include <string.h>
 #include <driver/i2c_master.h>
 #include <freertos/FreeRTOS.h>
@@ -36,8 +36,6 @@
 #define ICM20948_PWR_MGMT_1    0x06
 #define ICM20948_WHO_AM_I      0x00
 #define ICM20948_REG_BANK_SEL  0x7F
-
-static int current_bank = 0;
 
 static esp_err_t icm20948_write(icm20948_handle_t sensor,
                                 const uint8_t reg_start_addr,
@@ -118,11 +116,17 @@ icm20948_handle_t icm20948_create(i2c_port_t port, const uint16_t dev_addr, icm2
 		return NULL;
 	}
 
+	// 参数初始化
 	sensor->bus = port;
 	sensor->dev_addr = dev_addr << 1; // 左移以适配 8 位地址
 	sensor->data = data;
+	sensor->bank = -1;
+	sensor->timer = 0;
 	sensor->bus_handle = NULL;
 	sensor->dev_handle = NULL;
+	sensor->KalmanX = (Kalman_t){.Q_angle = 0.001f,.Q_bias = 0.003f,.R_measure = 0.03f};
+	sensor->KalmanY = (Kalman_t){.Q_angle = 0.001f,.Q_bias = 0.003f,.R_measure = 0.03f};
+	sensor->KalmanZ = (Kalman_t){.Q_angle = 0.001f,.Q_bias = 0.003f,.R_measure = 0.03f};
 
 	return (icm20948_handle_t)sensor;
 }
@@ -178,6 +182,11 @@ esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce
     if (ret != ESP_OK){
         return ret;
     }
+
+	ret = icm20948_set_bank(icm20948, 0);
+	if (ret != ESP_OK) {
+		return ret;
+	}
     return ret;
 }
 
@@ -231,13 +240,14 @@ esp_err_t icm20948_reset(icm20948_handle_t sensor)
 esp_err_t icm20948_set_bank(icm20948_handle_t sensor, uint8_t bank)
 {
 	esp_err_t ret;
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
 	if (bank > 3)
 		return ESP_FAIL;
 	bank = (bank << 4) & 0x30;
 	ret = icm20948_write(sensor, ICM20948_REG_BANK_SEL, &bank);
 	if (ret != ESP_OK)
 		return ret;
-	current_bank = bank;
+	sens->bank = bank;
 	return ret;
 }
 
@@ -303,10 +313,10 @@ float icm20948_get_gyro_sensitivity(icm20948_handle_t sensor){
 
 esp_err_t icm20948_get_acce(icm20948_handle_t sensor)
 {
-	if (current_bank != 0){
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	if (sens->bank != 0){
 		icm20948_set_bank(sensor, 0);
 	}
-	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
 	uint8_t data_rd[6];
 	esp_err_t ret = icm20948_read(sensor, ICM20948_ACCEL_XOUT_H, data_rd, sizeof(data_rd));
 
@@ -324,10 +334,10 @@ esp_err_t icm20948_get_acce(icm20948_handle_t sensor)
 
 esp_err_t icm20948_get_gyro(icm20948_handle_t sensor)
 {
-	if (current_bank != 0){
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	if (sens->bank != 0){
 		icm20948_set_bank(sensor, 0);
 	}
-	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
 	uint8_t data_rd[6];
 	esp_err_t ret = icm20948_read(sensor, ICM20948_GYRO_XOUT_H, data_rd, sizeof(data_rd));
 
@@ -341,6 +351,96 @@ esp_err_t icm20948_get_gyro(icm20948_handle_t sensor)
 	sens->data->gz = (float)sens->data->gz_raw / gyro_sensitivity;
 
 	return ret;
+}
+
+void icm20948_get_angle(icm20948_handle_t sensor)
+{
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	float dt = (float)(esp_timer_get_time() - sens->timer) / 1000000;
+	sens->timer = esp_timer_get_time();
+	float roll;
+	float roll_sqrt = sqrtf(powf(sens->data->ax_raw, 2) + powf(sens->data->az_raw, 2));
+	if (roll_sqrt != 0.0)
+	{
+		roll = atanf((float)sens->data->ay_raw / roll_sqrt) * RAD_TO_DEG;
+	}
+	else
+	{
+		roll = 0.0f;
+	}
+	float pitch = atan2f((float)-sens->data->ax_raw, (float)sens->data->az_raw) * RAD_TO_DEG;
+	if ((pitch < -90 && sens->data->angley > 90) || (pitch > 90 && sens->data->angley < -90))
+	{
+		sens->KalmanY.angle = pitch;
+		sens->data->angley = pitch;
+	}
+	else
+	{
+		sens->data->angley = icm20948_kalman_get_angle(&sens->KalmanY, pitch, sens->data->gy, dt);
+	}
+	if (fabsf(sens->data->angley) > 90)
+		sens->data->gx = -sens->data->gx;
+	sens->data->anglex = icm20948_kalman_get_angle(&sens->KalmanX, roll, sens->data->gx, dt);
+
+	float yaw = sens->data->gz * dt + sens->data->anglez;
+	if(fabsf(yaw) < 1000) {
+		sens->data->anglez = icm20948_kalman_get_angle(&sens->KalmanZ, yaw, sens->data->gz, dt);
+	}
+}
+
+float icm20948_kalman_get_angle(Kalman_t *Kalman, float newAngle, float newRate, float dt)
+{
+	float rate = newRate - Kalman->bias;
+	Kalman->angle += dt * rate;
+
+	Kalman->P[0][0] += dt * (dt * Kalman->P[1][1] - Kalman->P[0][1] - Kalman->P[1][0] + Kalman->Q_angle);
+	Kalman->P[0][1] -= dt * Kalman->P[1][1];
+	Kalman->P[1][0] -= dt * Kalman->P[1][1];
+	Kalman->P[1][1] += Kalman->Q_bias * dt;
+
+	float S = Kalman->P[0][0] + Kalman->R_measure;
+	float K[2];
+	K[0] = Kalman->P[0][0] / S;
+	K[1] = Kalman->P[1][0] / S;
+
+	float y = newAngle - Kalman->angle;
+	Kalman->angle += K[0] * y;
+	Kalman->bias += K[1] * y;
+
+	float P00_temp = Kalman->P[0][0];
+	float P01_temp = Kalman->P[0][1];
+
+	Kalman->P[0][0] -= K[0] * P00_temp;
+	Kalman->P[0][1] -= K[0] * P01_temp;
+	Kalman->P[1][0] -= K[1] * P00_temp;
+	Kalman->P[1][1] -= K[1] * P01_temp;
+
+	return Kalman->angle;
+};
+
+esp_err_t icm20948_get_temp(icm20948_handle_t sensor)
+{
+	icm20948_dev_t *sens = (icm20948_dev_t *)sensor;
+	if (sens->bank != 0){
+		icm20948_set_bank(sensor, 0);
+	}
+	uint8_t data_rd[2];
+	esp_err_t ret = icm20948_read(sensor, ICM20948_TEMP_XOUT_H, data_rd, sizeof(data_rd));
+
+	int16_t temp_raw = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
+	float temp = (float)temp_raw / 333.87f + 21.0f;
+	// lowpass filter
+	sens->data->temp = 0.9f * sens->data->temp + (1 - 0.9f) * temp;
+
+	return ret;
+}
+
+void icm20948_get_all(icm20948_handle_t sensor)
+{
+	icm20948_get_acce(sensor);
+	icm20948_get_gyro(sensor);
+	icm20948_get_angle(sensor);
+	icm20948_get_temp(sensor);
 }
 
 esp_err_t icm20948_set_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t acce_fs)

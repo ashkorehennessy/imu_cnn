@@ -94,16 +94,33 @@ typedef void *icm20948_handle_t;
 
 typedef gpio_isr_t icm20948_isr_t;
 
+// Kalman structure
+typedef struct
+{
+	float Q_angle;
+	float Q_bias;
+	float R_measure;
+	float angle;
+	float bias;
+	float P[2][2];
+} Kalman_t;
+
 typedef struct {
 	i2c_port_t bus;
 	gpio_num_t int_pin;
 	uint16_t dev_addr;
+	int bank;
+	int64_t timer;
+	Kalman_t KalmanX;
+	Kalman_t KalmanY;
+	Kalman_t KalmanZ;
 	icm20948_acce_fs_t acce_fs;
 	icm20948_gyro_fs_t gyro_fs;
 	icm20948_data_t *data;
 	i2c_master_bus_handle_t bus_handle;
 	i2c_master_dev_handle_t dev_handle;
 } icm20948_dev_t;
+
 
 /**
  * @brief Initialize the I2C bus and device
@@ -270,6 +287,42 @@ float icm20948_get_acce_sensitivity(icm20948_handle_t sensor);
  *     - ESP_FAIL Fail
  */
 esp_err_t icm20948_get_acce(icm20948_handle_t sensor);
+/**
+ * @brief get euler angle
+ *
+ * @param sensor object handle of icm20948
+ *
+ */
+void icm20948_get_angle(icm20948_handle_t sensor);
+
+/**
+ * @brief filter the angle using kalman filter
+ *
+ * @param Kalman kalman filter object
+ * @param newAngle euler angle
+ * @param newRate real gyroscope value
+ * @param dt time interval
+ *
+ */
+float icm20948_kalman_get_angle(Kalman_t *Kalman, float newAngle, float newRate, float dt);
+
+/**
+ * @brief Read the temperature value
+ *
+ * @param sensor object handle of icm20948
+ *
+ * @return
+ *     - ESP_OK Success
+ *     - ESP_FAIL Fail
+ */
+esp_err_t icm20948_get_temp(icm20948_handle_t sensor);
+/**
+ * @brief Read all sensor values
+ *
+ * @param sensor object handle of icm20948
+ *
+ */
+void icm20948_get_all(icm20948_handle_t sensor);
 /**
  * @brief Reset the internal registers and restores the default settings
  *

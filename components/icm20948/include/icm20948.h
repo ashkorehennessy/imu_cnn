@@ -2,6 +2,7 @@
 #define __ICM20948_H__
 
 #include "driver/i2c_master.h"
+#include "driver/spi_master.h"
 #include "driver/gpio.h"
 
 #define ICM20948_I2C_ADDRESS   0x69
@@ -56,6 +57,12 @@ typedef enum {
 	ICM20948_DLPF_OFF
 } icm20948_dlpf_t;
 
+typedef enum {
+	ICM20948_MODE_I2C,
+	ICM20948_MODE_SPI
+} icm20948_mode_t;
+
+
 typedef struct {
 	gpio_num_t interrupt_pin;                      /*!< GPIO connected to icm20948 INT pin       */
 	icm20948_int_pin_active_level_t active_level;  /*!< Active level of icm20948 INT pin         */
@@ -92,6 +99,9 @@ typedef struct {
 
 typedef void *icm20948_handle_t;
 
+typedef esp_err_t (*icm20948_write_function_t)(icm20948_handle_t sensor, const uint8_t reg_start_addr, const uint8_t *const data_buf);
+typedef esp_err_t (*icm20948_read_function_t)(icm20948_handle_t sensor, const uint8_t reg_start_addr, uint8_t *const data_buf, const uint8_t data_len);
+
 typedef gpio_isr_t icm20948_isr_t;
 
 // Kalman structure
@@ -117,14 +127,20 @@ typedef struct {
 	icm20948_acce_fs_t acce_fs;
 	icm20948_gyro_fs_t gyro_fs;
 	icm20948_data_t *data;
-	i2c_master_bus_handle_t bus_handle;
-	i2c_master_dev_handle_t dev_handle;
+	icm20948_mode_t mode;
+	i2c_master_dev_handle_t i2c_dev_handle;
+	spi_device_handle_t spi_dev_handle;
+	icm20948_read_function_t icm20948_read;
+	icm20948_write_function_t icm20948_write;
+
 } icm20948_dev_t;
 
 
 /**
  * @brief Initialize the I2C bus and device
- *
+*
+ * @param port I2C port number
+ * @param dev_addr I2C device address of sensor
  * @param sensor object handle of icm20948
  * @param SCL I2C SCL gpio number
  * @param SDA I2C SDA gpio number
@@ -134,19 +150,19 @@ typedef struct {
  *     - ESP_OK Success
  *     - ESP_FAIL Fail
  */
-esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, gpio_num_t SCL, gpio_num_t SDA, uint32_t scl_speed);
+esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, i2c_port_t port, const uint16_t dev_addr, gpio_num_t SCL, gpio_num_t SDA, uint32_t scl_speed);
+
+esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host, gpio_num_t MISO, gpio_num_t MOSI, gpio_num_t SCLK, gpio_num_t CS, int clk_speed);
 /**
  * @brief Create and init sensor object and return a sensor handle
  *
- * @param port I2C port number
- * @param dev_addr I2C device address of sensor
  * @param data sensor data structure
  *
  * @return
  *     - NULL Fail
  *     - Others Success
  */
-icm20948_handle_t icm20948_create(i2c_port_t port, uint16_t dev_addr, icm20948_data_t* data);
+icm20948_handle_t icm20948_create(icm20948_data_t* data);
 /**
  * @brief Configure the sensor with the given full scale range
  *

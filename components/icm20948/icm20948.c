@@ -37,7 +37,6 @@
 #define ICM20948_PWR_MGMT_1    0x06
 #define ICM20948_WHO_AM_I      0x00
 #define ICM20948_REG_BANK_SEL  0x7F
-#define CS_PIN   GPIO_NUM_10
 
 static esp_err_t icm20948_write_i2c(icm20948_handle_t sensor,
                                 const uint8_t reg_start_addr,
@@ -73,18 +72,16 @@ static esp_err_t icm20948_write_spi(icm20948_handle_t sensor,
 								const uint8_t reg_start_addr,
 								const uint8_t *const data_buf) {
 	esp_err_t ret = ESP_OK;
+	uint8_t write_buf[2];
+	write_buf[0] = reg_start_addr;
+	write_buf[1] = *data_buf;
 	const icm20948_dev_t *sens = sensor;
 	spi_device_acquire_bus(sens->spi_dev_handle, portMAX_DELAY);
-	gpio_set_level(CS_PIN, 0);
-	spi_transaction_t t = {0};
-	t.length = 8;
-	t.tx_buffer = &reg_start_addr;
-	ret = spi_device_transmit(sens->spi_dev_handle, &t);
-	memset(&t,0,sizeof(t));
-	t.length = 8;
-	t.tx_buffer = data_buf;
-	ret = spi_device_transmit(sens->spi_dev_handle, &t);
-	gpio_set_level(CS_PIN, 1);
+	spi_transaction_t t = {
+		.length = 16,
+		.tx_buffer = write_buf,
+	};
+	ret = spi_device_transmit(sens->spi_dev_handle, &t);  // transmit the register address and data
 	spi_device_release_bus(sens->spi_dev_handle);
 	return ret;
 }
@@ -97,18 +94,18 @@ static esp_err_t icm20948_read_spi(icm20948_handle_t sensor,
 	const uint8_t reg = reg_start_addr | 0x80;
 	const icm20948_dev_t *sens = sensor;
 	spi_device_acquire_bus(sens->spi_dev_handle, portMAX_DELAY);
-	gpio_set_level(CS_PIN, 0);
-	spi_transaction_t t = {0};
-	t.length = 8;
-	t.tx_buffer = &reg;
-	ret = spi_device_polling_transmit(sens->spi_dev_handle, &t);
-	memset(&t,0,sizeof(t));
-	t.length = 8 * data_len;
-	t.flags = SPI_TRANS_USE_RXDATA;
-	ret = spi_device_polling_transmit(sens->spi_dev_handle, &t);
-	gpio_set_level(CS_PIN, 1);
+	spi_transaction_t t_write = {
+		.length = 8,
+		.tx_buffer = &reg,
+		.flags = SPI_TRANS_CS_KEEP_ACTIVE,
+	};
+	spi_device_polling_transmit(sens->spi_dev_handle, &t_write);  // transmit the register address
+	spi_transaction_t t_read = {
+		.length = 8 * data_len,
+		.rx_buffer = data_buf,
+	};
+	ret = spi_device_polling_transmit(sens->spi_dev_handle, &t_read);  // receive the data
 	spi_device_release_bus(sens->spi_dev_handle);
-	memcpy(data_buf, t.rx_data, data_len);
 	return ret;
 }
 
@@ -164,7 +161,7 @@ esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host
 	};
 
 	// 创建 SPI 总线
-	ret = spi_bus_initialize(host, &spi_bus_cfg, SPI_DMA_CH_AUTO);
+	ret = spi_bus_initialize(host, &spi_bus_cfg, SPI_DMA_DISABLED);
 	if (ret != ESP_OK) {
 		ESP_LOGE("ICM20948", "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
 		return ret;
@@ -174,7 +171,7 @@ esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host
 	spi_device_interface_config_t dev_cfg = {
 		.clock_speed_hz = clk_speed,
 		.mode = 0,
-		.spics_io_num = -1,
+		.spics_io_num = CS,
 		.queue_size = 1,
 	};
 
@@ -225,7 +222,7 @@ esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce
         return ret;
     }
 
-	vTaskDelay(10 / portTICK_PERIOD_MS);
+	vTaskDelay(20 / portTICK_PERIOD_MS);
 
     ret = icm20948_wake_up(icm20948);
     if (ret != ESP_OK) {
@@ -438,9 +435,9 @@ void icm20948_get_angle(icm20948_handle_t sensor)
 		sens->data->gx = -sens->data->gx;
 	sens->data->anglex = icm20948_kalman_get_angle(&sens->KalmanX, roll, sens->data->gx, dt);
 
-	float yaw = sens->data->gz * dt + sens->data->anglez;
-	if(fabsf(yaw) < 1000) {
-		sens->data->anglez = icm20948_kalman_get_angle(&sens->KalmanZ, yaw, sens->data->gz, dt);
+	float yaw_inc = sens->data->gz * dt;
+	if(fabsf(yaw_inc) < 1000) {
+		sens->data->anglez = icm20948_kalman_get_angle(&sens->KalmanZ, sens->data->anglez + yaw_inc, sens->data->gz, dt);
 	}
 }
 

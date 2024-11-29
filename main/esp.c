@@ -27,19 +27,12 @@ static void icm20948_init()
     //     .pull_down_en = GPIO_PULLDOWN_DISABLE,
     //     .pull_up_en = GPIO_PULLUP_DISABLE,
     // };
-    gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_OUTPUT|GPIO_MODE_INPUT,
-        .pin_bit_mask = 1ULL << CS_PIN,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-    };
-    gpio_config(&io_conf);
+    // gpio_config(&io_conf);
     // gpio_set_level(AD0_PIN, 1);
     // gpio_set_level(CS_PIN, 1);
     icm20948 = icm20948_create(&icm20948_data);
     // icm20948_i2c_bus_init(icm20948, I2C_NUM_0, ICM20948_I2C_ADDRESS, SCL_PIN, SDA_PIN, 400000);
-    icm20948_spi_bus_init(icm20948, SPI2_HOST, MISO_PIN, MOSI_PIN, SCLK_PIN, CS_PIN, SPI_MASTER_FREQ_10M);
+    icm20948_spi_bus_init(icm20948, SPI2_HOST, MISO_PIN, MOSI_PIN, SCLK_PIN, CS_PIN, SPI_MASTER_FREQ_8M);
     icm20948_configure(icm20948, ACCE_FS_8G, GYRO_FS_2000DPS);
 }
 static void icm20948_read()

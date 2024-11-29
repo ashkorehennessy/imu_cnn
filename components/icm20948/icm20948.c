@@ -37,6 +37,7 @@
 #define ICM20948_PWR_MGMT_1    0x06
 #define ICM20948_WHO_AM_I      0x00
 #define ICM20948_REG_BANK_SEL  0x7F
+#define CS_PIN   GPIO_NUM_10
 
 static esp_err_t icm20948_write_i2c(icm20948_handle_t sensor,
                                 const uint8_t reg_start_addr,
@@ -71,20 +72,19 @@ static esp_err_t icm20948_read_i2c(icm20948_handle_t sensor,
 static esp_err_t icm20948_write_spi(icm20948_handle_t sensor,
 								const uint8_t reg_start_addr,
 								const uint8_t *const data_buf) {
-	esp_err_t ret;
+	esp_err_t ret = ESP_OK;
 	const icm20948_dev_t *sens = sensor;
 	spi_device_acquire_bus(sens->spi_dev_handle, portMAX_DELAY);
+	gpio_set_level(CS_PIN, 0);
 	spi_transaction_t t = {0};
-	t.cmd = reg_start_addr;
+	t.length = 8;
+	t.tx_buffer = &reg_start_addr;
+	ret = spi_device_transmit(sens->spi_dev_handle, &t);
+	memset(&t,0,sizeof(t));
 	t.length = 8;
 	t.tx_buffer = data_buf;
-	t.flags = SPI_TRANS_USE_TXDATA;
-	t.user = sensor;
-
 	ret = spi_device_transmit(sens->spi_dev_handle, &t);
-	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "SPI write failed: %s", esp_err_to_name(ret));
-	}
+	gpio_set_level(CS_PIN, 1);
 	spi_device_release_bus(sens->spi_dev_handle);
 	return ret;
 }
@@ -93,19 +93,20 @@ static esp_err_t icm20948_read_spi(icm20948_handle_t sensor,
 								const uint8_t reg_start_addr,
 								uint8_t *const data_buf,
 								const uint8_t data_len) {
-	esp_err_t ret;
+	esp_err_t ret = ESP_OK;
+	const uint8_t reg = reg_start_addr | 0x80;
 	const icm20948_dev_t *sens = sensor;
 	spi_device_acquire_bus(sens->spi_dev_handle, portMAX_DELAY);
-
+	gpio_set_level(CS_PIN, 0);
 	spi_transaction_t t = {0};
-	t.cmd = reg_start_addr;
-	t.flags = SPI_TRANS_USE_RXDATA;
-	t.length = 8 * data_len;
-	t.rxlength = 8 * data_len;
-	t.user = sensor;
-
+	t.length = 8;
+	t.tx_buffer = &reg;
 	ret = spi_device_polling_transmit(sens->spi_dev_handle, &t);
-
+	memset(&t,0,sizeof(t));
+	t.length = 8 * data_len;
+	t.flags = SPI_TRANS_USE_RXDATA;
+	ret = spi_device_polling_transmit(sens->spi_dev_handle, &t);
+	gpio_set_level(CS_PIN, 1);
 	spi_device_release_bus(sens->spi_dev_handle);
 	memcpy(data_buf, t.rx_data, data_len);
 	return ret;
@@ -152,18 +153,18 @@ esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, i2c_port_t port, const
 }
 esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host, gpio_num_t MISO, gpio_num_t MOSI, gpio_num_t SCLK, gpio_num_t CS, int clk_speed) {
 	// 配置 SPI 总线
+	esp_err_t ret;
 	spi_bus_config_t spi_bus_cfg = {
 		.miso_io_num = MISO,
 		.mosi_io_num = MOSI,
 		.sclk_io_num = SCLK,
 		.quadwp_io_num = -1,
 		.quadhd_io_num = -1,
-		.max_transfer_sz = 32,
-		.flags = SPICOMMON_BUSFLAG_MASTER
+		.max_transfer_sz = SOC_SPI_MAXIMUM_BUFFER_SIZE,
 	};
 
 	// 创建 SPI 总线
-	esp_err_t ret = spi_bus_initialize(host, &spi_bus_cfg, SPI_DMA_CH_AUTO);
+	ret = spi_bus_initialize(host, &spi_bus_cfg, SPI_DMA_CH_AUTO);
 	if (ret != ESP_OK) {
 		ESP_LOGE("ICM20948", "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
 		return ret;
@@ -173,9 +174,8 @@ esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host
 	spi_device_interface_config_t dev_cfg = {
 		.clock_speed_hz = clk_speed,
 		.mode = 0,
-		.spics_io_num = CS,
+		.spics_io_num = -1,
 		.queue_size = 1,
-		.command_bits = 8
 	};
 
 	icm20948_dev_t *sens = sensor;
@@ -250,6 +250,7 @@ esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce
         ESP_LOGE("ICM20948", "Device id mismatch!");
         return ESP_FAIL;
     }
+    ESP_LOGI("ICM20948", "Device id correct!");
 
     ret = icm20948_set_gyro_fs(icm20948, gyro_fs);
     if (ret != ESP_OK){

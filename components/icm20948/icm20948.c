@@ -4,7 +4,6 @@
 #include <esp_log.h>
 #include "esp_system.h"
 #include "icm20948.h"
-
 #include <esp_timer.h>
 #include <string.h>
 #include <driver/i2c_master.h>
@@ -50,7 +49,7 @@ static esp_err_t icm20948_write_i2c(icm20948_handle_t sensor,
 
 	ret = i2c_master_transmit(sens->i2c_dev_handle, write_buf, 2, -1);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "I2C write failed: %s", esp_err_to_name(ret));
+		ESP_LOGE(sens->tag, "I2C write failed: %s", esp_err_to_name(ret));
 	}
 	return ret;
 }
@@ -63,7 +62,7 @@ static esp_err_t icm20948_read_i2c(icm20948_handle_t sensor,
 	const icm20948_dev_t *sens = sensor;
 	ret = i2c_master_transmit_receive(sens->i2c_dev_handle, &reg_start_addr, 1, data_buf, data_len, -1);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "I2C read failed: %s", esp_err_to_name(ret));
+		ESP_LOGE(sens->tag, "I2C read failed: %s", esp_err_to_name(ret));
 	}
 	return ret;
 }
@@ -110,6 +109,7 @@ static esp_err_t icm20948_read_spi(icm20948_handle_t sensor,
 }
 
 esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, i2c_port_t port, const uint16_t dev_addr, gpio_num_t SCL, gpio_num_t SDA, uint32_t scl_speed) {
+	icm20948_dev_t *sens = sensor;
 	// 配置 I2C 主机
 	i2c_master_bus_config_t i2c_mst_config = {
 		.clk_source = I2C_CLK_SRC_DEFAULT,
@@ -124,7 +124,7 @@ esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, i2c_port_t port, const
 	i2c_master_bus_handle_t bus_handle;
 	esp_err_t ret = i2c_new_master_bus(&i2c_mst_config, &bus_handle);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "Failed to create I2C master bus: %s", esp_err_to_name(ret));
+		ESP_LOGE(sens->tag, "Failed to create I2C master bus: %s", esp_err_to_name(ret));
 		return ret;
 	}
 
@@ -136,19 +136,19 @@ esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, i2c_port_t port, const
 	};
 
 	// 添加设备
-	icm20948_dev_t *sens = sensor;
 	ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &sens->i2c_dev_handle);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "Failed to add I2C device: %s", esp_err_to_name(ret));
+		ESP_LOGE(sens->tag, "Failed to add I2C device: %s", esp_err_to_name(ret));
 		return ret;
 	}
 	sens->mode = ICM20948_MODE_I2C;
 	sens->icm20948_read = icm20948_read_i2c;
 	sens->icm20948_write = icm20948_write_i2c;
-	ESP_LOGI("ICM20948", "I2C bus and device initialized successfully");
+	ESP_LOGI(sens->tag, "I2C bus and device initialized successfully");
 	return ESP_OK;
 }
 esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host, gpio_num_t MISO, gpio_num_t MOSI, gpio_num_t SCLK, gpio_num_t CS, int clk_speed) {
+	icm20948_dev_t *sens = sensor;
 	// 配置 SPI 总线
 	esp_err_t ret;
 	spi_bus_config_t spi_bus_cfg = {
@@ -163,7 +163,7 @@ esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host
 	// 创建 SPI 总线
 	ret = spi_bus_initialize(host, &spi_bus_cfg, SPI_DMA_DISABLED);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
+		ESP_LOGE(sens->tag, "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
 		return ret;
 	}
 
@@ -175,25 +175,25 @@ esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host
 		.queue_size = 1,
 	};
 
-	icm20948_dev_t *sens = sensor;
 	ret = spi_bus_add_device(host, &dev_cfg, &sens->spi_dev_handle);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "Failed to add SPI device: %s", esp_err_to_name(ret));
+		ESP_LOGE(sens->tag, "Failed to add SPI device: %s", esp_err_to_name(ret));
 	}
 	sens->mode = ICM20948_MODE_SPI;
 	sens->icm20948_read = icm20948_read_spi;
 	sens->icm20948_write = icm20948_write_spi;
-	ESP_LOGI("ICM20948", "SPI bus and device initialized successfully");
+	ESP_LOGI(sens->tag, "SPI bus and device initialized successfully");
 	return ESP_OK;
 }
-icm20948_handle_t icm20948_create(icm20948_data_t *data) {
+icm20948_handle_t icm20948_create(icm20948_data_t *data, char *tag) {
 	icm20948_dev_t *sensor = (icm20948_dev_t *)calloc(1, sizeof(icm20948_dev_t));
 	if (!sensor) {
-		ESP_LOGE("ICM20948", "Memory allocation failed");
+		ESP_LOGE(tag, "Memory allocation failed");
 		return NULL;
 	}
 
 	// 参数初始化
+	sensor->tag	= tag;
 	sensor->data = data;
 	sensor->bank = -1;
 	sensor->timer = 0;
@@ -215,10 +215,11 @@ void icm20948_delete(icm20948_handle_t sensor)
 esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce_fs, icm20948_gyro_fs_t gyro_fs)
 {
     esp_err_t ret;
+	icm20948_dev_t *sens = icm20948;
 
     ret = icm20948_reset(icm20948);
     if (ret != ESP_OK){
-        ESP_LOGE("ICM20948", "Reset failed!");
+        ESP_LOGE(sens->tag, "Reset failed!");
         return ret;
     }
 
@@ -226,28 +227,28 @@ esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce
 
     ret = icm20948_wake_up(icm20948);
     if (ret != ESP_OK) {
-        ESP_LOGE("ICM20948", "Wake up failed!");
+        ESP_LOGE(sens->tag, "Wake up failed!");
         return ret;
     }
 
     ret = icm20948_set_bank(icm20948, 0);
     if (ret != ESP_OK) {
-        ESP_LOGE("ICM20948", "Set bank failed!");
+        ESP_LOGE(sens->tag, "Set bank failed!");
         return ret;
     }
 
     uint8_t device_id;
     ret = icm20948_get_deviceid(icm20948, &device_id);
     if (ret != ESP_OK){
-        ESP_LOGE("ICM20948", "Get device id failed!");
+        ESP_LOGE(sens->tag, "Get device id failed!");
         return ret;
     }
-    ESP_LOGI("ICM20948", "Device ID:0x%02X", device_id);
+    ESP_LOGI(sens->tag, "Device ID:0x%02X", device_id);
     if (device_id != ICM20948_WHO_AM_I_VAL){
-        ESP_LOGE("ICM20948", "Device id mismatch!");
+        ESP_LOGE(sens->tag, "Device id mismatch!");
         return ESP_FAIL;
     }
-    ESP_LOGI("ICM20948", "Device id correct!");
+    ESP_LOGI(sens->tag, "Device id correct!");
 
     ret = icm20948_set_gyro_fs(icm20948, gyro_fs);
     if (ret != ESP_OK){
@@ -515,7 +516,7 @@ esp_err_t icm20948_set_gyro_fs(icm20948_handle_t sensor, icm20948_gyro_fs_t gyro
 
 	ret = sens->icm20948_write(sensor, ICM20948_GYRO_CONFIG_1, &tmp);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "Set gyro fs failed!");
+		ESP_LOGE(sens->tag, "Set gyro fs failed!");
 		return ret;
 	}
 	// if set gyro fs success, record to sensor
@@ -550,7 +551,7 @@ esp_err_t icm20948_set_acce_fs(icm20948_handle_t sensor, icm20948_acce_fs_t acce
 
 	ret = sens->icm20948_write(sensor, ICM20948_ACCEL_CONFIG, &tmp);
 	if (ret != ESP_OK) {
-		ESP_LOGE("ICM20948", "Set acce fs failed!");
+		ESP_LOGE(sens->tag, "Set acce fs failed!");
 		return ret;
 	}
 	// if set acce fs success, record to sensor

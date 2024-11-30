@@ -116,7 +116,7 @@ typedef struct
 } Kalman_t;
 
 typedef struct {
-	i2c_port_t bus;
+	char *tag;
 	gpio_num_t int_pin;
 	uint16_t dev_addr;
 	int bank;
@@ -152,17 +152,35 @@ typedef struct {
  */
 esp_err_t icm20948_i2c_bus_init(icm20948_handle_t sensor, i2c_port_t port, const uint16_t dev_addr, gpio_num_t SCL, gpio_num_t SDA, uint32_t scl_speed);
 
+/**
+ * @brief Initialize the SPI bus and device
+ *
+ * @param sensor object handle of icm20948
+ * @param host SPI host
+ * @param MISO SPI MISO gpio number
+ * @param MOSI SPI MOSI gpio number
+ * @param SCLK SPI SCLK gpio number
+ * @param CS SPI CS gpio number
+ * @param clk_speed SPI clock speed
+ *
+ * @return
+ *     - ESP_OK Success
+ *     - ESP_FAIL Fail
+ */
 esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host, gpio_num_t MISO, gpio_num_t MOSI, gpio_num_t SCLK, gpio_num_t CS, int clk_speed);
+
 /**
  * @brief Create and init sensor object and return a sensor handle
  *
  * @param data sensor data structure
+ * @param tag sensor tag for logging
  *
  * @return
  *     - NULL Fail
  *     - Others Success
  */
-icm20948_handle_t icm20948_create(icm20948_data_t* data);
+icm20948_handle_t icm20948_create(icm20948_data_t* data, char *tag);
+
 /**
  * @brief Configure the sensor with the given full scale range
  *
@@ -175,6 +193,7 @@ icm20948_handle_t icm20948_create(icm20948_data_t* data);
  *     - ESP_FAIL Fail
  */
 esp_err_t icm20948_configure(icm20948_handle_t icm20948, icm20948_acce_fs_t acce_fs, icm20948_gyro_fs_t gyro_fs);
+
 /**
  * @brief Delete and release a sensor object
  *
@@ -248,6 +267,7 @@ esp_err_t icm20948_get_gyro_fs(icm20948_handle_t sensor, icm20948_gyro_fs_t *gyr
  * @return gyroscope sensitivity
  */
 float icm20948_get_gyro_sensitivity(icm20948_handle_t sensor);
+
 /**
  * @brief Read gyro values
  *
@@ -303,6 +323,7 @@ float icm20948_get_acce_sensitivity(icm20948_handle_t sensor);
  *     - ESP_FAIL Fail
  */
 esp_err_t icm20948_get_acce(icm20948_handle_t sensor);
+
 /**
  * @brief get euler angle
  *
@@ -332,6 +353,7 @@ float icm20948_kalman_get_angle(Kalman_t *Kalman, float newAngle, float newRate,
  *     - ESP_FAIL Fail
  */
 esp_err_t icm20948_get_temp(icm20948_handle_t sensor);
+
 /**
  * @brief Read all sensor values
  *
@@ -339,6 +361,7 @@ esp_err_t icm20948_get_temp(icm20948_handle_t sensor);
  *
  */
 void icm20948_get_all(icm20948_handle_t sensor);
+
 /**
  * @brief Reset the internal registers and restores the default settings
  *

@@ -4,7 +4,9 @@
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define ICM20948_I2C_ADDRESS   0x69
 #define ICM20948_I2C_ADDRESS_1 0x68
 #define ICM20948_WHO_AM_I_VAL  0xEA
@@ -116,7 +118,7 @@ typedef struct
 } Kalman_t;
 
 typedef struct {
-	char *tag;
+	const char *tag;
 	gpio_num_t int_pin;
 	uint16_t dev_addr;
 	int bank;
@@ -132,7 +134,7 @@ typedef struct {
 	spi_device_handle_t spi_dev_handle;
 	icm20948_read_function_t icm20948_read;
 	icm20948_write_function_t icm20948_write;
-
+    int16_t gyroz_corrector;
 } icm20948_dev_t;
 
 
@@ -179,7 +181,7 @@ esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host
  *     - NULL Fail
  *     - Others Success
  */
-icm20948_handle_t icm20948_create(icm20948_data_t* data, char *tag);
+icm20948_handle_t icm20948_create(icm20948_data_t *data, const char *tag, int16_t gyroz_gorrector);
 
 /**
  * @brief Configure the sensor with the given full scale range
@@ -438,4 +440,7 @@ esp_err_t icm20948_set_acce_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_
  */
 esp_err_t icm20948_set_gyro_dlpf(icm20948_handle_t sensor, icm20948_dlpf_t dlpf_gyro);
 
+#ifdef __cplusplus
+}
+#endif
 #endif // !__ICM20948_H__

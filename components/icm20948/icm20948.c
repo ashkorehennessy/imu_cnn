@@ -17,7 +17,6 @@
 
 #define ALPHA      0.99f        /*!< Weight of gyroscope */
 #define RAD_TO_DEG 57.27272727f /*!< Radians to degrees */
-
 /* ICM20948 register */
 #define ICM20948_GYRO_CONFIG_1 0x01
 #define ICM20948_ACCEL_CONFIG  0x14
@@ -44,8 +43,8 @@ static esp_err_t icm20948_write_i2c(icm20948_handle_t sensor,
 	const icm20948_dev_t *sens = sensor;
 	uint8_t write_buf[2];
 
-	write_buf[0] = reg_start_addr; // 设置寄存器地址
-	write_buf[1] = *data_buf;      // 设置数据
+	write_buf[0] = reg_start_addr;
+	write_buf[1] = *data_buf;
 
 	ret = i2c_master_transmit(sens->i2c_dev_handle, write_buf, 2, -1);
 	if (ret != ESP_OK) {
@@ -185,7 +184,7 @@ esp_err_t icm20948_spi_bus_init(icm20948_handle_t sensor, spi_host_device_t host
 	ESP_LOGI(sens->tag, "SPI bus and device initialized successfully");
 	return ESP_OK;
 }
-icm20948_handle_t icm20948_create(icm20948_data_t *data, char *tag) {
+icm20948_handle_t icm20948_create(icm20948_data_t *data, const char *tag, int16_t gyroz_gorrector) {
 	icm20948_dev_t *sensor = (icm20948_dev_t *)calloc(1, sizeof(icm20948_dev_t));
 	if (!sensor) {
 		ESP_LOGE(tag, "Memory allocation failed");
@@ -199,6 +198,7 @@ icm20948_handle_t icm20948_create(icm20948_data_t *data, char *tag) {
 	sensor->timer = 0;
 	sensor->i2c_dev_handle = NULL;
 	sensor->spi_dev_handle = NULL;
+    sensor->gyroz_corrector = gyroz_gorrector;
 	sensor->KalmanX = (Kalman_t){.Q_angle = 0.001f,.Q_bias = 0.003f,.R_measure = 0.03f};
 	sensor->KalmanY = (Kalman_t){.Q_angle = 0.001f,.Q_bias = 0.003f,.R_measure = 0.03f};
 	sensor->KalmanZ = (Kalman_t){.Q_angle = 0.001f,.Q_bias = 0.003f,.R_measure = 0.03f};
@@ -398,7 +398,7 @@ esp_err_t icm20948_get_gyro(icm20948_handle_t sensor)
 
 	sens->data->gx_raw = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
 	sens->data->gy_raw = (int16_t)((data_rd[2] << 8) + (data_rd[3]));
-	sens->data->gz_raw = (int16_t)((data_rd[4] << 8) + (data_rd[5]));
+	sens->data->gz_raw = (int16_t)((data_rd[4] << 8) + (data_rd[5])) + sens->gyroz_corrector;
 
 	sens->data->gx = (float)sens->data->gx_raw / gyro_sensitivity;
 	sens->data->gy = (float)sens->data->gy_raw / gyro_sensitivity;
@@ -438,7 +438,8 @@ void icm20948_get_angle(icm20948_handle_t sensor)
 
 	float yaw_inc = sens->data->gz * dt;
 	if(fabsf(yaw_inc) < 1000) {
-		sens->data->anglez = icm20948_kalman_get_angle(&sens->KalmanZ, sens->data->anglez + yaw_inc, sens->data->gz, dt);
+//		sens->data->anglez = icm20948_kalman_get_angle(&sens->KalmanZ, sens->data->anglez + yaw_inc, sens->data->gz, dt);
+        sens->data->anglez += yaw_inc;
 	}
 }
 

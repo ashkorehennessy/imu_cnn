@@ -1,0 +1,14 @@
+7767517
+12 11
+pnnx.Input               pnnx_input_0             0 1 0 #0=(1,6,200)f32
+nn.Conv1d                convbn1d_0               1 1 0 1 bias=True dilation=(1) groups=1 in_channels=6 kernel_size=(5) out_channels=16 padding=(2) padding_mode=zeros stride=(1) @bias=(16)f32 @weight=(16,6,5)f32 $input=0 #0=(1,6,200)f32 #1=(1,16,200)f32
+nn.ReLU                  features.2               1 1 1 2 #1=(1,16,200)f32 #2=(1,16,200)f32
+nn.MaxPool1d             features.3               1 1 2 3 ceil_mode=False dilation=(1) kernel_size=(2) padding=(0) return_indices=False stride=(2) #2=(1,16,200)f32 #3=(1,16,100)f32
+nn.Conv1d                convbn1d_1               1 1 3 4 bias=True dilation=(1) groups=1 in_channels=16 kernel_size=(3) out_channels=32 padding=(1) padding_mode=zeros stride=(1) @bias=(32)f32 @weight=(32,16,3)f32 $input=3 #3=(1,16,100)f32 #4=(1,32,100)f32
+nn.ReLU                  features.6               1 1 4 5 #4=(1,32,100)f32 #5=(1,32,100)f32
+nn.MaxPool1d             features.7               1 1 5 6 ceil_mode=False dilation=(1) kernel_size=(2) padding=(0) return_indices=False stride=(2) #5=(1,32,100)f32 #6=(1,32,50)f32
+torch.flatten            torch.flatten_0          1 1 6 7 end_dim=-1 start_dim=1 $input=6 #6=(1,32,50)f32 #7=(1,1600)f32
+nn.Linear                classifier.1             1 1 7 8 bias=True in_features=1600 out_features=64 @bias=(64)f32 @weight=(64,1600)f32 #7=(1,1600)f32 #8=(1,64)f32
+nn.ReLU                  classifier.2             1 1 8 9 #8=(1,64)f32 #9=(1,64)f32
+nn.Linear                classifier.3             1 1 9 10 bias=True in_features=64 out_features=10 @bias=(10)f32 @weight=(10,64)f32 #9=(1,64)f32 #10=(1,10)f32
+pnnx.Output              pnnx_output_0            1 0 10 #10=(1,10)f32

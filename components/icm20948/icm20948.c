@@ -17,6 +17,7 @@
 
 #define ALPHA      0.99f        /*!< Weight of gyroscope */
 #define RAD_TO_DEG 57.27272727f /*!< Radians to degrees */
+
 /* ICM20948 register */
 #define ICM20948_GYRO_CONFIG_1 0x01
 #define ICM20948_ACCEL_CONFIG  0x14

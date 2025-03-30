@@ -1,9 +1,12 @@
 #include <stdio.h>
+#include <esp_timer.h>
+#include <esp_task_wdt.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "icm20948.h"
 #include "tgmath.h"
+#include "imu_cnn.h"
 // icm20948_spi SPI Pins
 #define CS_PIN   GPIO_NUM_10
 #define MOSI_PIN GPIO_NUM_11
@@ -73,10 +76,25 @@ static void data_process(void *pvParameter)
     }
 }
 
-void app_main(void)
+static void imu_reference(void *pvParameter)
+{
+    int predict_result = 0;
+    load_ncnn_model();
+    while (1) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        int64_t start_timer = esp_timer_get_time();
+        predict_result = predict_imu_data();
+        int64_t end_timer = esp_timer_get_time();
+        ESP_LOGI("imu_cnn", "predict result: %d, time used %dms", predict_result, (int)((end_timer - start_timer) / 1000));
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+}
+
+extern "C" void app_main(void)
 {
     xTaskCreate(icm20948_task, "icm20948_task", 1024 * 4, NULL, 5, NULL);
-    xTaskCreate(data_process, "data_process", 1024 * 4, NULL, 4, &notify_task_handle);
+//    xTaskCreate(data_process, "data_process", 1024 * 4, NULL, 4, &notify_task_handle);
+    xTaskCreate(imu_reference, "imu_reference", 1024 * 4, NULL, 4, &notify_task_handle);
     while(1){
         vTaskDelay(1000);
     }

@@ -1,3 +1,11 @@
-# icm20948 for esp
+# IMU-Based Handwritten Digit Recognition with ESP32-S3
 
-The code is based on [listout/icm20948_driver](https://github.com/listout/icm20948_driver), migrated to the new I2C API, added SPI support, and added Euler angle calculation from [TKJElectronics/KalmanFilter](https://github.com/TKJElectronics/KalmanFilter)
+A handwriting recognition system using ESP32-S3 and ICM-20948 IMU sensor, leveraging CNN for digit prediction.
+
+## Hardware Requirements
+| Component              | Specification                             |
+|------------------------|-------------------------------------------|
+| Microcontroller        | ESP32-S3 Development Board                |
+| IMU Sensor             | ICM-20948 9-Axis Motion Sensor            |
+| Connectivity           | USB-C Cable for Programming/Data Transfer |
+
